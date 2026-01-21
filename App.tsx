@@ -1,0 +1,180 @@
+import React, { useState, useEffect } from 'react';
+import { Layout } from './components/Layout';
+import { MatchCard } from './components/MatchCard';
+import { AdminPanel } from './components/AdminPanel';
+import { Leaderboard } from './components/Leaderboard';
+import { db } from './services/database';
+import { User, Match, MatchStatus } from './types';
+
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [nickname, setNickname] = useState('');
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [view, setView] = useState<'lobby' | 'leaderboard'>('lobby');
+
+  // Load data periodically or on event
+  const refreshData = () => {
+    setMatches(db.getMatches());
+    setUsers(db.getAllUsers());
+    if (user) {
+        const updatedUser = db.getUser(user.id);
+        if (updatedUser) setUser(updatedUser);
+    }
+  };
+
+  useEffect(() => {
+    // Initial load
+    refreshData();
+
+    // Listen to simulated DB updates
+    db.addEventListener('update', refreshData);
+    
+    // Polling as a backup for time-based status checks if needed
+    const interval = setInterval(refreshData, 3000);
+
+    return () => {
+      db.removeEventListener('update', refreshData);
+      clearInterval(interval);
+    };
+  }, [user?.id]);
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (nickname.trim()) {
+      const u = db.login(nickname.trim());
+      setUser(u);
+    }
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    setNickname('');
+    setView('lobby');
+  };
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-700">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-lime-400 rounded-full flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl font-black text-slate-900">P</span>
+            </div>
+            <h1 className="text-3xl font-bold text-white mb-2">PickleBet</h1>
+            <p className="text-slate-400">雙打制匹克球場邊運彩系統</p>
+          </div>
+          
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label htmlFor="nickname" className="block text-sm font-medium text-slate-300 mb-1">
+                輸入暱稱開始
+              </label>
+              <input
+                id="nickname"
+                type="text"
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder="例如: PickleKing"
+                className="w-full bg-slate-950 border border-slate-600 rounded-lg py-3 px-4 text-white placeholder-slate-600 focus:outline-none focus:border-lime-500 focus:ring-1 focus:ring-lime-500 transition-colors"
+                autoFocus
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!nickname.trim()}
+              className="w-full bg-lime-500 hover:bg-lime-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-bold py-3 rounded-lg transition-colors text-lg"
+            >
+              進入賽場
+            </button>
+          </form>
+          <p className="text-center text-xs text-slate-600 mt-6">
+            Admin login: use "admin"
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Admin View
+  if (user.isAdmin) {
+    return (
+      <Layout userBalance={user.balance} userName={user.name} onLogout={handleLogout} title="Admin">
+        <AdminPanel user={user} />
+      </Layout>
+    );
+  }
+
+  // User View
+  return (
+    <Layout userBalance={user.balance} userName={user.name} onLogout={handleLogout}>
+      
+      {/* Mobile Bottom Nav Spacer is handled in Layout, here we assume tabs at top for web or content for mobile */}
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
+        <button 
+            onClick={() => setView('lobby')}
+            className={`flex-1 py-2 px-4 rounded-lg font-bold transition-all whitespace-nowrap ${view === 'lobby' ? 'bg-lime-500 text-slate-900' : 'bg-slate-800 text-slate-400'}`}
+        >
+            賽事大廳
+        </button>
+        <button 
+            onClick={() => setView('leaderboard')}
+            className={`flex-1 py-2 px-4 rounded-lg font-bold transition-all whitespace-nowrap ${view === 'leaderboard' ? 'bg-lime-500 text-slate-900' : 'bg-slate-800 text-slate-400'}`}
+        >
+            排行榜
+        </button>
+      </div>
+
+      {view === 'lobby' && (
+        <>
+            {/* Live/Open Matches First */}
+            <h2 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4 ml-1">進行中 / 開放投注</h2>
+            {matches.filter(m => m.status !== MatchStatus.FINISHED).length === 0 ? (
+                <div className="p-8 text-center text-slate-600 border border-dashed border-slate-700 rounded-xl mb-8">
+                    暫無進行中的賽事
+                </div>
+            ) : (
+                matches
+                    .filter(m => m.status !== MatchStatus.FINISHED)
+                    .map(match => (
+                        <MatchCard 
+                            key={match.id} 
+                            match={match} 
+                            currentUser={user} 
+                            onBetClick={refreshData}
+                        />
+                    ))
+            )}
+
+            {/* Finished Matches */}
+            <h2 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4 ml-1 mt-8">歷史賽果</h2>
+             {matches
+                    .filter(m => m.status === MatchStatus.FINISHED)
+                    .map(match => (
+                        <MatchCard 
+                            key={match.id} 
+                            match={match} 
+                            currentUser={user}
+                        />
+                    ))
+            }
+        </>
+      )}
+
+      {view === 'leaderboard' && (
+        <Leaderboard users={users} currentUser={user} />
+      )}
+
+      {/* Bankruptcy Warning */}
+      {user.balance === 0 && (
+          <div className="fixed bottom-0 left-0 right-0 bg-red-600 text-white p-4 z-50 animate-bounce">
+              <div className="max-w-4xl mx-auto flex items-center justify-between">
+                  <span className="font-bold">😱 破產啦！請找管理員執行深蹲懲罰以重置籌碼。</span>
+              </div>
+          </div>
+      )}
+    </Layout>
+  );
+}
+
+export default App;

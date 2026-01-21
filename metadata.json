@@ -1,0 +1,5 @@
+{
+  "name": "PickleBet",
+  "description": "A parimutuel betting system for Pickleball doubles matches, featuring dynamic odds and live leaderboards.",
+  "requestFramePermissions": []
+}
