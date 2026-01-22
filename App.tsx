@@ -12,6 +12,7 @@ function App() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [view, setView] = useState<'lobby' | 'leaderboard'>('lobby');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // Load data periodically or on event
   const refreshData = () => {
@@ -24,26 +25,29 @@ function App() {
   };
 
   useEffect(() => {
-    // Initial load
-    refreshData();
-
-    // Listen to simulated DB updates
-    db.addEventListener('update', refreshData);
-    
-    // Polling as a backup for time-based status checks if needed
-    const interval = setInterval(refreshData, 3000);
+    // Initialize subscription to Firebase
+    db.connect(() => {
+        refreshData();
+    });
 
     return () => {
-      db.removeEventListener('update', refreshData);
-      clearInterval(interval);
+      db.disconnect();
     };
   }, [user?.id]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (nickname.trim()) {
-      const u = db.login(nickname.trim());
-      setUser(u);
+      setIsLoggingIn(true);
+      try {
+        const u = await db.login(nickname.trim());
+        setUser(u);
+      } catch (err) {
+        console.error("Login failed", err);
+        alert("登入失敗，請稍後再試");
+      } finally {
+        setIsLoggingIn(false);
+      }
     }
   };
 
@@ -78,14 +82,22 @@ function App() {
                 placeholder="例如: PickleKing"
                 className="w-full bg-slate-950 border border-slate-600 rounded-lg py-3 px-4 text-white placeholder-slate-600 focus:outline-none focus:border-lime-500 focus:ring-1 focus:ring-lime-500 transition-colors"
                 autoFocus
+                disabled={isLoggingIn}
               />
             </div>
             <button
               type="submit"
-              disabled={!nickname.trim()}
-              className="w-full bg-lime-500 hover:bg-lime-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-bold py-3 rounded-lg transition-colors text-lg"
+              disabled={!nickname.trim() || isLoggingIn}
+              className="w-full bg-lime-500 hover:bg-lime-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-bold py-3 rounded-lg transition-colors text-lg flex justify-center items-center"
             >
-              進入賽場
+              {isLoggingIn ? (
+                <svg className="animate-spin h-5 w-5 text-slate-900" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ) : (
+                '進入賽場'
+              )}
             </button>
           </form>
           <p className="text-center text-xs text-slate-600 mt-6">
@@ -141,7 +153,6 @@ function App() {
                             key={match.id} 
                             match={match} 
                             currentUser={user} 
-                            onBetClick={refreshData}
                         />
                     ))
             )}

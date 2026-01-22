@@ -19,6 +19,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
   const [p3, setP3] = useState(DEMO_PLAYERS[2]);
   const [p4, setP4] = useState(DEMO_PLAYERS[3]);
   const [selectedSideBets, setSelectedSideBets] = useState<string[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // Resolution State
   const [resolvingMatch, setResolvingMatch] = useState<Match | null>(null);
@@ -30,17 +31,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
   const refresh = () => setTick(t => t + 1);
 
   useEffect(() => {
+    // In new architecture, parent App handles subscription, but AdminPanel needs fresh data too.
+    // We can rely on db internal state or re-subscribe.
+    // For simplicity, we just pull from db sync methods which are updated by the App's global listener.
     const loadData = () => {
       setMatches(db.getMatches());
       setUsers(db.getAllUsers());
     };
     
+    // Initial load
     loadData();
-    db.addEventListener('update', loadData);
-    return () => db.removeEventListener('update', loadData);
+
+    // Since db triggers update internally, we need to know when.
+    // Hack: We poll or we just rely on parent passing props? 
+    // Best: AdminPanel should probably accept users/matches as props to be pure.
+    // But to minimize refactor: we poll `db` or use the fact that `db` is global single source of truth.
+    // Let's attach a listener specifically for this panel or just poll for now.
+    const interval = setInterval(loadData, 2000);
+    return () => clearInterval(interval);
   }, []);
 
-  const handleCreateMatch = () => {
+  const handleCreateMatch = async () => {
     const teamA: [string, string] = [p1, p2];
     const teamB: [string, string] = [p3, p4];
     
@@ -51,14 +62,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
       return;
     }
 
-    db.createMatch(court, teamA, teamB, selectedSideBets);
-    // Reset selection slightly for convenience
-    setSelectedSideBets([]);
-    refresh();
+    setIsProcessing(true);
+    try {
+        await db.createMatch(court, teamA, teamB, selectedSideBets);
+        // Reset selection slightly for convenience
+        setSelectedSideBets([]);
+        refresh();
+    } catch (e) {
+        alert("建立失敗: " + e);
+    } finally {
+        setIsProcessing(false);
+    }
   };
 
-  const handleStatusChange = (id: string, status: MatchStatus) => {
-    db.updateMatchStatus(id, status);
+  const handleStatusChange = async (id: string, status: MatchStatus) => {
+    try {
+        await db.updateMatchStatus(id, status);
+        refresh();
+    } catch (e) {
+        alert("狀態更新失敗");
+    }
   };
 
   const startResolve = (match: Match) => {
@@ -78,7 +101,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
       setIsConfirming(false); // Reset confirmation if user changes a value
   };
 
-  const submitResolution = () => {
+  const submitResolution = async () => {
       if (!resolvingMatch) return;
       
       const totalMarkets = resolvingMatch.markets.length;
@@ -97,20 +120,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
       }
 
       // Step 2: Execute
+      setIsProcessing(true);
       try {
-        db.resolveMatch(resolvingMatch.id, resolutionValues);
+        await db.resolveMatch(resolvingMatch.id, resolutionValues);
         setResolvingMatch(null);
         setResolutionValues({});
         setIsConfirming(false);
+        refresh();
       } catch (e) {
         alert("結算失敗: " + e);
         setIsConfirming(false);
+      } finally {
+        setIsProcessing(false);
       }
   };
 
-  const handleResetUser = (userId: string) => {
+  const handleResetUser = async (userId: string) => {
       if (window.confirm("確定執行破產重置？這會將其餘額設為 1000。")) {
-          db.resetUserBalance(userId);
+          await db.resetUserBalance(userId);
+          refresh();
       }
   };
 
@@ -180,13 +208,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
                   </div>
 
                   <div className="p-4 bg-slate-900 border-t border-slate-700 flex gap-4 shrink-0">
-                      <button type="button" onClick={cancelResolve} className="flex-1 py-3 rounded-lg bg-slate-700 text-white font-bold hover:bg-slate-600 transition-colors">
+                      <button type="button" onClick={cancelResolve} disabled={isProcessing} className="flex-1 py-3 rounded-lg bg-slate-700 text-white font-bold hover:bg-slate-600 transition-colors">
                         取消
                       </button>
                       
                       <button 
                         type="button"
-                        onClick={submitResolution} 
+                        onClick={submitResolution}
+                        disabled={isProcessing} 
                         className={`flex-1 py-3 rounded-lg font-bold transition-all shadow-lg ${
                             !isComplete
                                 ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
@@ -195,7 +224,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
                                     : 'bg-lime-500 text-slate-900 hover:bg-lime-400 hover:scale-[1.02]'
                         }`}
                       >
-                          {!isComplete ? '尚未完成' : isConfirming ? '確定要結算嗎？(點擊執行)' : '確認並結算'}
+                          {isProcessing ? '處理中...' : !isComplete ? '尚未完成' : isConfirming ? '確定要結算嗎？(點擊執行)' : '確認並結算'}
                       </button>
                   </div>
               </div>
@@ -277,8 +306,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
                      </div>
                 </div>
 
-                <button type="button" onClick={handleCreateMatch} className="w-full bg-lime-500 hover:bg-lime-400 text-slate-900 font-bold py-3 rounded-lg transition-colors">
-                    發布比賽
+                <button 
+                    type="button" 
+                    onClick={handleCreateMatch} 
+                    disabled={isProcessing}
+                    className="w-full bg-lime-500 hover:bg-lime-400 text-slate-900 font-bold py-3 rounded-lg transition-colors disabled:opacity-50"
+                >
+                    {isProcessing ? '發布中...' : '發布比賽'}
                 </button>
             </div>
 

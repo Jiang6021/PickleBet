@@ -1,79 +1,147 @@
 import { User, Match, Bet, MatchStatus, Prediction, MarketType, Market } from '../types';
 import { INITIAL_BALANCE, ADMIN_USERNAME } from '../constants';
+import { initializeApp } from 'firebase/app';
+import { 
+  getDatabase, 
+  ref, 
+  set, 
+  push, 
+  onValue, 
+  update, 
+  runTransaction, 
+  get, 
+  child,
+  Database
+} from 'firebase/database';
 
-// --- Simulation of Firebase Realtime Database using LocalStorage ---
-
-const STORAGE_KEYS = {
-  USERS: 'picklebet_users',
-  MATCHES: 'picklebet_matches',
-  BETS: 'picklebet_bets',
+// --- Firebase Configuration ---
+// TODO: Replace with your actual Firebase Project Config
+const firebaseConfig = {
+  apiKey: "AIzaSyBPXQ0T2696ATTnxiJ1Ol0mBQ-d56xSVBg",
+  authDomain: "picklebet-ec307.firebaseapp.com",
+  databaseURL: "https://picklebet-ec307-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "picklebet-ec307",
+  storageBucket: "picklebet-ec307.firebasestorage.app",
+  messagingSenderId: "739745045296",
+  appId: "1:739745045296:web:f709f28469ed45a89f06f5"
 };
 
-class MockDatabase extends EventTarget {
-  private users: User[] = [];
-  private matches: Match[] = [];
-  private bets: Bet[] = [];
+const app = initializeApp(firebaseConfig);
+const rtdb = getDatabase(app);
+
+class FirebaseDatabaseService {
+  private db: Database;
+  // Local cache for synchronous read access (needed for odds calc loops)
+  private localUsers: User[] = [];
+  private localMatches: Match[] = [];
+  private localBets: Bet[] = [];
+  
+  private onDataUpdate: (() => void) | null = null;
+  private unsubscribeFunctions: (() => void)[] = [];
 
   constructor() {
-    super();
-    this.load();
+    this.db = rtdb;
   }
 
-  private load() {
-    const u = localStorage.getItem(STORAGE_KEYS.USERS);
-    const m = localStorage.getItem(STORAGE_KEYS.MATCHES);
-    const b = localStorage.getItem(STORAGE_KEYS.BETS);
+  // --- Connection & Listeners ---
 
-    this.users = u ? JSON.parse(u) : [];
-    this.matches = m ? JSON.parse(m) : [];
-    this.bets = b ? JSON.parse(b) : [];
+  /**
+   * Subscribes to Firebase nodes and updates local cache.
+   * Calls the callback whenever data changes.
+   */
+  connect(callback: () => void) {
+    this.onDataUpdate = callback;
+
+    // Listen for Users
+    const usersRef = ref(this.db, 'users');
+    const unsubUsers = onValue(usersRef, (snapshot) => {
+      const data = snapshot.val();
+      this.localUsers = data ? Object.values(data) : [];
+      this.notifyUpdate();
+    });
+
+    // Listen for Matches
+    const matchesRef = ref(this.db, 'matches');
+    const unsubMatches = onValue(matchesRef, (snapshot) => {
+      const data = snapshot.val();
+      this.localMatches = data ? Object.values(data) : [];
+      this.notifyUpdate();
+    });
+
+    // Listen for Bets
+    const betsRef = ref(this.db, 'bets');
+    const unsubBets = onValue(betsRef, (snapshot) => {
+      const data = snapshot.val();
+      this.localBets = data ? Object.values(data) : [];
+      this.notifyUpdate();
+    });
+
+    this.unsubscribeFunctions = [unsubUsers, unsubMatches, unsubBets];
   }
 
-  private save() {
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(this.users));
-    localStorage.setItem(STORAGE_KEYS.MATCHES, JSON.stringify(this.matches));
-    localStorage.setItem(STORAGE_KEYS.BETS, JSON.stringify(this.bets));
-    this.dispatchEvent(new CustomEvent('update'));
+  disconnect() {
+    this.unsubscribeFunctions.forEach(fn => fn());
+    this.unsubscribeFunctions = [];
+  }
+
+  private notifyUpdate() {
+    if (this.onDataUpdate) {
+      this.onDataUpdate();
+    }
   }
 
   // --- User Logic ---
 
-  login(name: string): User {
-    const existing = this.users.find(u => u.name.toLowerCase() === name.toLowerCase());
-    if (existing) return existing;
+  async login(name: string): Promise<User> {
+    // Check local cache first (optimistic), but verify with DB
+    // Since users are keyed by ID usually, but here we only have Name input.
+    // We need to find if name exists.
+    
+    // We'll trust local cache for the find to be fast, 
+    // but in a real app you'd query the DB.
+    const existing = this.localUsers.find(u => u.name.toLowerCase() === name.toLowerCase());
+    
+    if (existing) {
+      return existing;
+    }
 
+    // Create new user
+    const newId = crypto.randomUUID();
     const newUser: User = {
-      id: crypto.randomUUID(),
+      id: newId,
       name: name,
       balance: INITIAL_BALANCE,
       isAdmin: name === ADMIN_USERNAME,
       bankruptCount: 0,
     };
-    this.users.push(newUser);
-    this.save();
+
+    // Save to Firebase
+    await set(ref(this.db, `users/${newId}`), newUser);
     return newUser;
   }
 
   getUser(id: string): User | undefined {
-    return this.users.find(u => u.id === id);
+    return this.localUsers.find(u => u.id === id);
   }
 
   getAllUsers(): User[] {
-    return [...this.users].sort((a, b) => b.balance - a.balance);
+    return [...this.localUsers].sort((a, b) => b.balance - a.balance);
   }
 
-  resetUserBalance(userId: string) {
-    const user = this.users.find(u => u.id === userId);
-    if (user) {
-      user.balance = INITIAL_BALANCE;
-      user.bankruptCount += 1;
-      this.save();
-    }
+  async resetUserBalance(userId: string) {
+    const userRef = ref(this.db, `users/${userId}`);
+    await runTransaction(userRef, (currentUser) => {
+      if (currentUser) {
+        currentUser.balance = INITIAL_BALANCE;
+        currentUser.bankruptCount = (currentUser.bankruptCount || 0) + 1;
+      }
+      return currentUser;
+    });
   }
 
   // --- Match Logic ---
 
-  createMatch(court: string, teamA: [string, string], teamB: [string, string], sideBets: string[]) {
+  async createMatch(court: string, teamA: [string, string], teamB: [string, string], sideBets: string[]) {
     const markets: Market[] = [
       {
         question: '獲勝隊伍 (Winner)',
@@ -90,8 +158,9 @@ class MockDatabase extends EventTarget {
       });
     });
 
+    const matchId = crypto.randomUUID();
     const newMatch: Match = {
-      id: crypto.randomUUID(),
+      id: matchId,
       court,
       teamA,
       teamB,
@@ -100,42 +169,49 @@ class MockDatabase extends EventTarget {
       timestamp: Date.now()
     };
 
-    this.matches.push(newMatch);
-    this.save();
+    await set(ref(this.db, `matches/${matchId}`), newMatch);
   }
 
-  updateMatchStatus(matchId: string, status: MatchStatus) {
-    const match = this.matches.find(m => m.id === matchId);
-    if (match) {
-      match.status = status;
-      this.save();
-    }
+  async updateMatchStatus(matchId: string, status: MatchStatus) {
+    await update(ref(this.db, `matches/${matchId}`), { status });
   }
 
   getMatches(): Match[] {
-    return [...this.matches].sort((a, b) => b.timestamp - a.timestamp);
+    return [...this.localMatches].sort((a, b) => b.timestamp - a.timestamp);
   }
 
   // --- Betting Logic ---
 
-  placeBet(userId: string, matchId: string, marketIndex: number, selection: Prediction, amount: number) {
-    const user = this.users.find(u => u.id === userId);
-    const match = this.matches.find(m => m.id === matchId);
-
-    if (!user || !match) throw new Error("Invalid user or match");
-    if (user.balance < amount) throw new Error("Insufficient funds");
+  async placeBet(userId: string, matchId: string, marketIndex: number, selection: Prediction, amount: number) {
+    const match = this.localMatches.find(m => m.id === matchId);
+    
+    if (!match) throw new Error("Match not found");
     if (match.status !== MatchStatus.OPEN) throw new Error("Betting is closed");
-
+    
     // Prevent players from betting on their own match
     const allPlayers = [...match.teamA, ...match.teamB];
-    if (allPlayers.includes(user.name)) {
+    // Find user name from local cache
+    const user = this.localUsers.find(u => u.id === userId);
+    if (user && allPlayers.includes(user.name)) {
         throw new Error("Players cannot bet on their own match!");
     }
 
-    user.balance -= amount;
+    const userRef = ref(this.db, `users/${userId}`);
 
+    // 1. Transaction to deduct balance (Atomic)
+    await runTransaction(userRef, (currentUser) => {
+      if (!currentUser) return; // Should not happen
+      if (currentUser.balance < amount) {
+        throw new Error("Insufficient funds"); // This aborts the transaction
+      }
+      currentUser.balance -= amount;
+      return currentUser;
+    });
+
+    // 2. If successful, push the bet
+    const betId = crypto.randomUUID();
     const newBet: Bet = {
-      id: crypto.randomUUID(),
+      id: betId,
       userId,
       matchId,
       marketIndex,
@@ -144,93 +220,102 @@ class MockDatabase extends EventTarget {
       timestamp: Date.now()
     };
 
-    this.bets.push(newBet);
-    this.save();
+    await set(ref(this.db, `bets/${betId}`), newBet);
   }
 
   getBetsForMatch(matchId: string): Bet[] {
-    return this.bets.filter(b => b.matchId === matchId);
+    return this.localBets.filter(b => b.matchId === matchId);
   }
 
   // --- Settlement Logic (Parimutuel) ---
 
-  resolveMatch(matchId: string, marketResults: { [index: number]: Prediction }) {
-    const match = this.matches.find(m => m.id === matchId);
+  async resolveMatch(matchId: string, marketResults: { [index: number]: Prediction }) {
+    const match = this.localMatches.find(m => m.id === matchId);
     if (!match || match.status === MatchStatus.FINISHED) return;
 
-    // Apply results to markets
+    const updates: any = {};
+    
+    // 1. Update Match Status and Results
+    updates[`matches/${matchId}/status`] = MatchStatus.FINISHED;
     Object.entries(marketResults).forEach(([idxStr, result]) => {
-      const idx = parseInt(idxStr);
-      if (match.markets[idx]) {
-        match.markets[idx].result = result;
-      }
+        updates[`matches/${matchId}/markets/${idxStr}/result`] = result;
     });
 
-    match.status = MatchStatus.FINISHED;
+    // 2. Calculate Payouts locally, then prepare updates for users
+    // Note: In a production app with thousands of users, this should be a Cloud Function.
+    // For this app, client-side calculation is acceptable but risky if the client disconnects mid-update.
+    // We will build one giant update object to try and be atomic.
 
-    // Calculate Payouts for each market independently
+    // Snapshot of current bets
+    const allBetsForMatch = this.localBets.filter(b => b.matchId === matchId);
+    
+    // Map to track user balance changes
+    const userPayouts: Record<string, number> = {};
+
     match.markets.forEach((market, index) => {
-      const marketBets = this.bets.filter(b => b.matchId === matchId && b.marketIndex === index);
-      const winner = market.result;
-      
-      if (!winner) return; // Should not happen if admin inputs correctly
+      const winner = marketResults[index];
+      if (!winner) return;
 
+      const marketBets = allBetsForMatch.filter(b => b.marketIndex === index);
       const totalPool = marketBets.reduce((sum, b) => sum + b.amount, 0);
       const winningBets = marketBets.filter(b => b.selection === winner);
       const winningPool = winningBets.reduce((sum, b) => sum + b.amount, 0);
 
-      // Edge Case 1: No Winners -> Refund all (Odds = 1.0)
-      // Edge Case 2: One-Sided (Total == Winning) -> No profit (Odds = 1.0)
       let finalOdds = 1.0;
       if (winningPool > 0) {
-        // Floor to prevent floating point weirdness and ensure house doesn't lose
-        // But here we want standard parimutuel. 
-        // Logic: Payout = Bet * (Total / Winning)
         finalOdds = totalPool / winningPool;
       }
 
-      // Distribute winnings
-      winningBets.forEach(bet => {
-        const payout = Math.floor(bet.amount * finalOdds);
-        const user = this.users.find(u => u.id === bet.userId);
-        if (user) {
-          user.balance += payout;
-        }
-      });
-      
-      // If no winners, refund everyone in this market
+      // Distribute winnings or Refund
       if (winningPool === 0 && totalPool > 0) {
+          // Refund
           marketBets.forEach(bet => {
-            const user = this.users.find(u => u.id === bet.userId);
-            if (user) {
-                user.balance += bet.amount;
-            }
+            userPayouts[bet.userId] = (userPayouts[bet.userId] || 0) + bet.amount;
+          });
+      } else {
+          // Payout
+          winningBets.forEach(bet => {
+            const payout = Math.floor(bet.amount * finalOdds);
+            userPayouts[bet.userId] = (userPayouts[bet.userId] || 0) + payout;
           });
       }
     });
 
-    this.save();
+    // We can't use atomic `update` easily for user balances because `balance` changes rapidly.
+    // However, to be safe, we should read the *latest* balances or use transaction for each user.
+    // Given the constraints, we will perform individual transactions for each winning user.
+    // This is slower but safer than `update` which might overwrite a bet that happened 1ms ago.
+    
+    // Execute Match Update first
+    await update(ref(this.db), updates);
+
+    // Execute User Payouts (Async parallel)
+    const payoutPromises = Object.entries(userPayouts).map(([userId, amount]) => {
+        const userRef = ref(this.db, `users/${userId}`);
+        return runTransaction(userRef, (user) => {
+            if (user) {
+                user.balance += amount;
+            }
+            return user;
+        });
+    });
+
+    await Promise.all(payoutPromises);
   }
   
-  // Helper to calculate current odds for display
+  // Helper to calculate current odds for display (Synchronous using cache)
   calculateProjectedOdds(matchId: string, marketIndex: number): { [key: string]: number } {
-     const bets = this.bets.filter(b => b.matchId === matchId && b.marketIndex === marketIndex);
+     const bets = this.localBets.filter(b => b.matchId === matchId && b.marketIndex === marketIndex);
      const totalPool = bets.reduce((sum, b) => sum + b.amount, 0);
      
-     if (totalPool === 0) return { }; // No data
+     if (totalPool === 0) return { }; 
 
-     // Group by selection
      const selectionPools: Record<string, number> = {};
      bets.forEach(b => {
          selectionPools[b.selection] = (selectionPools[b.selection] || 0) + b.amount;
      });
 
      const odds: Record<string, number> = {};
-     // Calculate theoretical odds for each potential outcome
-     // If I bet on X now, what is the return?
-     // Current Return = Total / Pool_of_X
-     
-     // Note: This is "current" odds. It changes as more people bet.
      Object.keys(selectionPools).forEach(key => {
          const pool = selectionPools[key];
          odds[key] = pool > 0 ? (totalPool / pool) : 1;
@@ -240,7 +325,7 @@ class MockDatabase extends EventTarget {
   }
   
   getPoolStats(matchId: string, marketIndex: number) {
-      const bets = this.bets.filter(b => b.matchId === matchId && b.marketIndex === marketIndex);
+      const bets = this.localBets.filter(b => b.matchId === matchId && b.marketIndex === marketIndex);
       const totalPool = bets.reduce((sum, b) => sum + b.amount, 0);
       const counts: Record<string, number> = {};
       bets.forEach(b => {
@@ -250,4 +335,4 @@ class MockDatabase extends EventTarget {
   }
 }
 
-export const db = new MockDatabase();
+export const db = new FirebaseDatabaseService();

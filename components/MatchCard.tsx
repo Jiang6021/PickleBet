@@ -5,13 +5,14 @@ import { db } from '../services/database';
 interface MatchCardProps {
   match: Match;
   currentUser: User;
-  onBetClick?: () => void; // Trigger refresh
+  onBetClick?: () => void; // Optional now since we have live listeners
 }
 
-export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser, onBetClick }) => {
+export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
   const [selectedMarketIndex, setSelectedMarketIndex] = useState(0);
   const [betAmount, setBetAmount] = useState<string>('');
   const [betError, setBetError] = useState<string | null>(null);
+  const [isBetting, setIsBetting] = useState(false);
   const [odds, setOdds] = useState<{[key: string]: number}>({});
   const [stats, setStats] = useState<{totalPool: number, counts: any}>({ totalPool: 0, counts: {} });
 
@@ -20,19 +21,19 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser, onBetC
   const isPlayer = allPlayers.includes(currentUser.name);
 
   // Update odds/stats periodically or on prop change
+  // Note: Since db now has live data, these helper functions will use the latest cache
   useEffect(() => {
     const updateInfo = () => {
       setOdds(db.calculateProjectedOdds(match.id, selectedMarketIndex));
       setStats(db.getPoolStats(match.id, selectedMarketIndex));
     };
     updateInfo();
-    // In a real app, this would be a subscription. 
-    // For this mock, we rely on parent re-renders or we could set an interval.
-    const interval = setInterval(updateInfo, 2000);
-    return () => clearInterval(interval);
-  }, [match.id, selectedMarketIndex, match.status]);
+    
+    // In the new architecture, we rely on parent re-renders triggered by db subscription.
+    // However, keeping this doesn't hurt.
+  }, [match.id, selectedMarketIndex, match.status, match]); // Added match dependency
 
-  const handlePlaceBet = (selection: Prediction) => {
+  const handlePlaceBet = async (selection: Prediction) => {
     setBetError(null);
     const amount = parseInt(betAmount);
     
@@ -40,13 +41,17 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser, onBetC
       setBetError("請輸入有效的金額");
       return;
     }
+
+    setIsBetting(true);
     
     try {
-      db.placeBet(currentUser.id, match.id, selectedMarketIndex, selection, amount);
+      await db.placeBet(currentUser.id, match.id, selectedMarketIndex, selection, amount);
       setBetAmount('');
-      if (onBetClick) onBetClick();
     } catch (e: any) {
-      setBetError(e.message);
+      // Firebase throws objects usually, but simple Error messages are handled
+      setBetError(e.message || "下注失敗，請檢查餘額或連線");
+    } finally {
+      setIsBetting(false);
     }
   };
 
@@ -141,7 +146,7 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser, onBetC
                             <button
                                 key={opt}
                                 onClick={() => handlePlaceBet(opt)}
-                                disabled={!betAmount}
+                                disabled={!betAmount || isBetting}
                                 className="group relative flex flex-col items-center p-3 rounded-lg bg-slate-800 border border-slate-600 hover:border-lime-400 hover:bg-slate-700 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <span className="font-bold text-lg text-white mb-1">
@@ -163,10 +168,12 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser, onBetC
                               value={betAmount}
                               onChange={(e) => setBetAmount(e.target.value)}
                               placeholder="下注金額 (100, 500...)"
+                              disabled={isBetting}
                               className="w-full bg-slate-950 border border-slate-700 rounded-lg py-2 pl-8 pr-4 text-white placeholder-slate-600 focus:outline-none focus:border-lime-500 transition-colors"
                           />
                       </div>
                       {betError && <p className="text-red-400 text-xs mt-2 text-center">{betError}</p>}
+                      {isBetting && <p className="text-lime-400 text-xs mt-2 text-center animate-pulse">處理中...</p>}
                   </div>
                 </>
             )}
