@@ -1,18 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Match, MatchStatus, Prediction, User, MarketType } from '../types';
 import { db } from '../services/database';
 
 interface MatchCardProps {
   match: Match;
   currentUser: User;
-  onBetClick?: () => void; // Optional now since we have live listeners
+  onBetClick?: () => void; 
 }
 
 export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
   const [selectedMarketIndex, setSelectedMarketIndex] = useState(0);
-  const [betAmount, setBetAmount] = useState<string>('');
+  const [betAmount, setBetAmount] = useState<number>(100); // Default to 1 unit (100)
   const [betError, setBetError] = useState<string | null>(null);
   const [isBetting, setIsBetting] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [odds, setOdds] = useState<{[key: string]: number}>({});
   const [stats, setStats] = useState<{totalPool: number, counts: any}>({ totalPool: 0, counts: {} });
 
@@ -20,25 +21,39 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
   const allPlayers = [...match.teamA, ...match.teamB];
   const isPlayer = allPlayers.includes(currentUser.name);
 
-  // Update odds/stats periodically or on prop change
-  // Note: Since db now has live data, these helper functions will use the latest cache
+  // Core logic to fetch latest stats from DB cache
+  const updateCalculations = useCallback(() => {
+    setOdds(db.calculateProjectedOdds(match.id, selectedMarketIndex));
+    setStats(db.getPoolStats(match.id, selectedMarketIndex));
+  }, [match.id, selectedMarketIndex]);
+
+  // 1. Update when props change
   useEffect(() => {
-    const updateInfo = () => {
-      setOdds(db.calculateProjectedOdds(match.id, selectedMarketIndex));
-      setStats(db.getPoolStats(match.id, selectedMarketIndex));
-    };
-    updateInfo();
-    
-    // In the new architecture, we rely on parent re-renders triggered by db subscription.
-    // However, keeping this doesn't hurt.
-  }, [match.id, selectedMarketIndex, match.status, match]); // Added match dependency
+    updateCalculations();
+  }, [updateCalculations, match.status]); 
+
+  // 2. Live Polling: Ensure odds update even if Match object ref doesn't change
+  useEffect(() => {
+    if (match.status === MatchStatus.OPEN) {
+        const interval = setInterval(updateCalculations, 1000);
+        return () => clearInterval(interval);
+    }
+  }, [updateCalculations, match.status]);
+
+  const handleAdjustBet = (delta: number) => {
+      const newAmount = betAmount + delta;
+      if (newAmount < 100) return;
+      if (newAmount > currentUser.balance) return;
+      setBetAmount(newAmount);
+      setBetError(null);
+  };
 
   const handlePlaceBet = async (selection: Prediction) => {
     setBetError(null);
-    const amount = parseInt(betAmount);
+    const amount = betAmount;
     
-    if (isNaN(amount) || amount <= 0) {
-      setBetError("請輸入有效的金額");
+    if (amount <= 0 || amount > currentUser.balance) {
+      setBetError("餘額不足或金額無效");
       return;
     }
 
@@ -46,9 +61,24 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
     
     try {
       await db.placeBet(currentUser.id, match.id, selectedMarketIndex, selection, amount);
-      setBetAmount('');
+      
+      // Success feedback
+      const label = selection === Prediction.TEAM_A ? 'Team A' : 
+                    selection === Prediction.TEAM_B ? 'Team B' : 
+                    selection === Prediction.YES ? 'Yes' : 'No';
+      
+      setBetAmount(100); // Reset to default unit
+      setSuccessMessage(`下注成功！ $${amount} on ${label}`);
+      
+      // Force immediate update
+      setTimeout(updateCalculations, 100);
+
+      // Reset success message
+      setTimeout(() => {
+          setSuccessMessage(null);
+      }, 2000);
+
     } catch (e: any) {
-      // Firebase throws objects usually, but simple Error messages are handled
       setBetError(e.message || "下注失敗，請檢查餘額或連線");
     } finally {
       setIsBetting(false);
@@ -134,10 +164,11 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
                   <div className="mb-3">
                     <p className="text-sm font-medium text-slate-300 mb-2 text-center">{currentMarket.question}</p>
                     <div className="flex justify-center gap-6 text-xs text-slate-400 font-mono mb-2">
-                        <span>Total Pool: ${stats.totalPool}</span>
+                        <span className="transition-all duration-300">Total Pool: <span className="text-white font-bold">${stats.totalPool}</span></span>
                     </div>
                   </div>
 
+                  {/* Odds / Selection Buttons */}
                   <div className="grid grid-cols-2 gap-4">
                     {currentMarket.options.map((opt) => {
                         const optOdds = odds[opt];
@@ -146,7 +177,7 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
                             <button
                                 key={opt}
                                 onClick={() => handlePlaceBet(opt)}
-                                disabled={!betAmount || isBetting}
+                                disabled={isBetting || successMessage !== null || betAmount > currentUser.balance}
                                 className="group relative flex flex-col items-center p-3 rounded-lg bg-slate-800 border border-slate-600 hover:border-lime-400 hover:bg-slate-700 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <span className="font-bold text-lg text-white mb-1">
@@ -160,20 +191,48 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
                     })}
                   </div>
 
-                  <div className="mt-4">
-                      <div className="relative">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">$</span>
-                          <input
-                              type="number"
-                              value={betAmount}
-                              onChange={(e) => setBetAmount(e.target.value)}
-                              placeholder="下注金額 (100, 500...)"
-                              disabled={isBetting}
-                              className="w-full bg-slate-950 border border-slate-700 rounded-lg py-2 pl-8 pr-4 text-white placeholder-slate-600 focus:outline-none focus:border-lime-500 transition-colors"
-                          />
-                      </div>
-                      {betError && <p className="text-red-400 text-xs mt-2 text-center">{betError}</p>}
-                      {isBetting && <p className="text-lime-400 text-xs mt-2 text-center animate-pulse">處理中...</p>}
+                  {/* Amount Stepper Control */}
+                  <div className="mt-4 h-16 relative">
+                      {successMessage ? (
+                          <div className="absolute inset-0 bg-lime-500 rounded-lg flex items-center justify-center animate-in fade-in zoom-in duration-200">
+                              <div className="text-slate-900 font-bold flex items-center gap-2">
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
+                                  </svg>
+                                  {successMessage}
+                              </div>
+                          </div>
+                      ) : (
+                          <div className="flex items-center justify-between bg-slate-950 p-2 rounded-lg border border-slate-700 h-full">
+                              <button
+                                  onClick={() => handleAdjustBet(-100)}
+                                  disabled={betAmount <= 100 || isBetting}
+                                  className="w-12 h-full rounded bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed font-bold text-xl transition-colors border border-slate-600 flex items-center justify-center"
+                              >
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                                      <path fillRule="evenodd" d="M4 10a.75.75 0 01.75-.75h10.5a.75.75 0 010 1.5H4.75A.75.75 0 014 10z" clipRule="evenodd" />
+                                  </svg>
+                              </button>
+                              
+                              <div className="flex flex-col items-center flex-1">
+                                  <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider">Bet Amount</span>
+                                  <span className={`text-2xl font-black font-mono tracking-widest ${betAmount > currentUser.balance ? 'text-red-500' : 'text-lime-400'}`}>
+                                      ${betAmount}
+                                  </span>
+                              </div>
+
+                              <button
+                                  onClick={() => handleAdjustBet(100)}
+                                  disabled={betAmount + 100 > currentUser.balance || isBetting}
+                                  className="w-12 h-full rounded bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed font-bold text-xl transition-colors border border-slate-600 flex items-center justify-center"
+                              >
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                                      <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+                                  </svg>
+                              </button>
+                          </div>
+                      )}
+                      {betError && <p className="text-red-400 text-xs mt-1 text-center absolute w-full -bottom-5">{betError}</p>}
                   </div>
                 </>
             )}
