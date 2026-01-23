@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, Match, MatchStatus, Prediction, MarketType } from '../types';
 import { db } from '../services/database';
-import { COURTS, DEMO_PLAYERS, SIDE_BET_QUESTIONS } from '../constants';
+import { COURTS, SIDE_BET_QUESTIONS } from '../constants';
 
 interface AdminPanelProps {
   user: User;
@@ -14,10 +14,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
   
   // Create Match State
   const [court, setCourt] = useState(COURTS[0]);
-  const [p1, setP1] = useState(DEMO_PLAYERS[0]);
-  const [p2, setP2] = useState(DEMO_PLAYERS[1]);
-  const [p3, setP3] = useState(DEMO_PLAYERS[2]);
-  const [p4, setP4] = useState(DEMO_PLAYERS[3]);
+  // Initialize with empty strings to force selection from real users
+  const [p1, setP1] = useState('');
+  const [p2, setP2] = useState('');
+  const [p3, setP3] = useState('');
+  const [p4, setP4] = useState('');
   const [selectedSideBets, setSelectedSideBets] = useState<string[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -52,6 +53,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
   }, []);
 
   const handleCreateMatch = async () => {
+    // Validate inputs
+    if (!p1 || !p2 || !p3 || !p4) {
+        alert("請選擇完整的 4 位參賽玩家");
+        return;
+    }
+
     const teamA: [string, string] = [p1, p2];
     const teamB: [string, string] = [p3, p4];
     
@@ -67,6 +74,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
         await db.createMatch(court, teamA, teamB, selectedSideBets);
         // Reset selection slightly for convenience
         setSelectedSideBets([]);
+        // We keep players selected in case admin wants to create another match with similar players,
+        // or we could reset them via: setP1(''); setP2(''); ...
         refresh();
     } catch (e) {
         alert("建立失敗: " + e);
@@ -161,6 +170,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
   const selectedCount = resolvingMatch ? Object.keys(resolutionValues).length : 0;
   const totalMarkets = resolvingMatch ? resolvingMatch.markets.length : 0;
   const isComplete = selectedCount === totalMarkets && totalMarkets > 0;
+
+  // Filter candidates: Real users only, exclude admins
+  const playerCandidates = users.filter(u => !u.isAdmin);
 
   return (
     <div className="space-y-8 relative">
@@ -264,13 +276,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
                         <div>
                             <label className="block text-xs text-slate-400 mb-1">Team A - P1</label>
                             <select value={p1} onChange={e => setP1(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
-                                {DEMO_PLAYERS.map(p => <option key={p} value={p}>{p}</option>)}
+                                <option value="">選擇玩家</option>
+                                {playerCandidates.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
                             </select>
                         </div>
                         <div>
                             <label className="block text-xs text-slate-400 mb-1">Team A - P2</label>
                             <select value={p2} onChange={e => setP2(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
-                                {DEMO_PLAYERS.map(p => <option key={p} value={p}>{p}</option>)}
+                                <option value="">選擇玩家</option>
+                                {playerCandidates.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
                             </select>
                         </div>
                     </div>
@@ -278,13 +292,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
                          <div>
                             <label className="block text-xs text-slate-400 mb-1">Team B - P3</label>
                             <select value={p3} onChange={e => setP3(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
-                                {DEMO_PLAYERS.map(p => <option key={p} value={p}>{p}</option>)}
+                                <option value="">選擇玩家</option>
+                                {playerCandidates.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
                             </select>
                         </div>
                         <div>
                             <label className="block text-xs text-slate-400 mb-1">Team B - P4</label>
                             <select value={p4} onChange={e => setP4(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
-                                {DEMO_PLAYERS.map(p => <option key={p} value={p}>{p}</option>)}
+                                <option value="">選擇玩家</option>
+                                {playerCandidates.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
                             </select>
                         </div>
                     </div>
