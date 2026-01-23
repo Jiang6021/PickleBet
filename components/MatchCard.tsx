@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Match, MatchStatus, Prediction, User, MarketType } from '../types';
 import { db } from '../services/database';
+import { MatchStartAlert } from './Effects';
 
 interface MatchCardProps {
   match: Match;
@@ -20,6 +21,10 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [odds, setOdds] = useState<{[key: string]: number}>({});
   const [stats, setStats] = useState<{totalPool: number, counts: any}>({ totalPool: 0, counts: {} });
+  
+  // Animation state
+  const [showLockedAnimation, setShowLockedAnimation] = useState(false);
+  const prevStatusRef = useRef<MatchStatus>(match.status);
 
   // Safety: Check if user is a player
   const allPlayers = [...match.teamA, ...match.teamB];
@@ -43,6 +48,17 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
         return () => clearInterval(interval);
     }
   }, [updateCalculations, match.status]);
+
+  // 3. Detect Status Change for Animation
+  useEffect(() => {
+    if (prevStatusRef.current === MatchStatus.OPEN && match.status === MatchStatus.LOCKED) {
+        setShowLockedAnimation(true);
+        // Hide after 3 seconds
+        const timer = setTimeout(() => setShowLockedAnimation(false), 3000);
+        return () => clearTimeout(timer);
+    }
+    prevStatusRef.current = match.status;
+  }, [match.status]);
 
   // Reset confirmation if user changes amount or market
   useEffect(() => {
@@ -138,7 +154,10 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, currentUser }) => {
   };
 
   return (
-    <div className={`rounded-xl overflow-hidden border ${match.status === MatchStatus.FINISHED ? 'border-slate-700 bg-slate-800/50 opacity-80' : 'border-slate-600 bg-slate-800'} shadow-xl mb-6 transition-all`}>
+    <div className={`rounded-xl overflow-hidden border relative ${match.status === MatchStatus.FINISHED ? 'border-slate-700 bg-slate-800/50 opacity-80' : 'border-slate-600 bg-slate-800'} shadow-xl mb-6 transition-all`}>
+      {/* Locked Animation Overlay */}
+      {showLockedAnimation && <MatchStartAlert />}
+
       {/* Header */}
       <div className="flex justify-between items-center p-3 bg-slate-700/50 border-b border-slate-700">
         <span className="font-mono text-sm text-slate-400">{match.court}</span>

@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Layout } from './components/Layout';
 import { MatchCard } from './components/MatchCard';
 import { AdminPanel } from './components/AdminPanel';
 import { Leaderboard } from './components/Leaderboard';
+import { CoinRain } from './components/Effects'; // Import Effects
 import { db } from './services/database';
 import { User, Match, MatchStatus } from './types';
 
@@ -13,6 +14,10 @@ function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [view, setView] = useState<'lobby' | 'leaderboard'>('lobby');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Effects State
+  const [showCoins, setShowCoins] = useState(false);
+  const prevBalanceRef = useRef<number | undefined>(undefined);
 
   // Load data periodically or on event
   const refreshData = () => {
@@ -35,6 +40,20 @@ function App() {
     };
   }, [user?.id]);
 
+  // Monitor Balance for Coin Effect
+  useEffect(() => {
+    if (user) {
+        // If we have a previous balance and the new balance is higher
+        if (prevBalanceRef.current !== undefined && user.balance > prevBalanceRef.current) {
+            setShowCoins(true);
+            // Turn off after 4 seconds
+            const timer = setTimeout(() => setShowCoins(false), 4000);
+            return () => clearTimeout(timer);
+        }
+        prevBalanceRef.current = user.balance;
+    }
+  }, [user?.balance]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (nickname.trim()) {
@@ -42,6 +61,8 @@ function App() {
       try {
         const u = await db.login(nickname.trim());
         setUser(u);
+        // Initialize ref so login doesn't trigger coins
+        prevBalanceRef.current = u.balance; 
       } catch (err) {
         console.error("Login failed", err);
         alert("登入失敗，請稍後再試");
@@ -55,6 +76,7 @@ function App() {
     setUser(null);
     setNickname('');
     setView('lobby');
+    prevBalanceRef.current = undefined;
   };
 
   if (!user) {
@@ -120,6 +142,7 @@ function App() {
   // User View
   return (
     <Layout userBalance={user.balance} userName={user.name} onLogout={handleLogout}>
+      {showCoins && <CoinRain />}
       
       {/* Mobile Bottom Nav Spacer is handled in Layout, here we assume tabs at top for web or content for mobile */}
       <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
